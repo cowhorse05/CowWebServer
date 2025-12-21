@@ -5,7 +5,7 @@
 #include <queue>
 #include <semaphore.h>
 #include<stdio.h>
-
+//模板类
 /*-----------线程池---------------*/
 template <typename T> class CowThreadPool {
   public:
