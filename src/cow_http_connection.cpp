@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <asm-generic/errno-base.h>
 #include <asm-generic/errno.h>
+#include <cstdarg>
 #include <cstring>
 #include <errno.h>
 #include <fcntl.h>
@@ -12,19 +13,22 @@
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <webserver/cow_http_connection.hpp>
 //定义http相应状态信息
 const char* ok_200_title = "OK";
 const char* error_400_title = "Bad Request";
 const char* error_400_form =
-    "Your request has bad syntax or is inherently impossible";
+    "Your request has bad syntax or is inherently impossible\n";
 const char* error_403_title = "Forbidden";
 const char* error_403_form =
-    "You don't have permission to get file from this server";
+    "You don't have permission to get file from this server\n";
+const char* error_404_title = "Not Found";
+const char* error_404_form = "The requested file was not found on this server";
 const char* error_500_title = "Internal Error";
 const char* error_500_form =
-    "There was an unusual problem sering the requested file";
+    "There was an unusual problem serving the requested file\n";
 
 const char* doc_root = "/home/liyufeng/cpp_projects/webserver/resources";
 
@@ -54,8 +58,8 @@ void print_events(uint32_t events) {
 void addfd(int epollfd, int fd, bool one_shot) {
 
     struct epoll_event event;
-    // event.events = EPOLLIN | EPOLLRDHUP;
-    event.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
+    event.events = EPOLLIN | EPOLLRDHUP;
+    // event.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
     event.data.fd = fd;
     if (one_shot) {
         event.events = event.events | EPOLLONESHOT;
@@ -119,7 +123,53 @@ bool CowHttpConnection::read() { //一次性读完
 
 bool CowHttpConnection::write() {
     printf("send data to user\n");
-    return true;
+    ssize_t n;
+    /*
+    struct iovec {
+        void  *iov_base;  // 缓冲区起始地址（用户空间内存）
+        size_t iov_len;   // 缓冲区长度（字节数）
+    };
+    writev 返回 n 字节后，要“消费掉”这 n 字节
+    按顺序优先消费 header，再消费 body
+    */
+    while (true) {
+        if (m_iv_count == 2) {
+            n = writev(m_sockfd, m_iv,
+                       m_iv_count); //一次性发送多个不连续的数据块
+        } else {
+            n = send(m_sockfd, m_write_buf + m_write_sent,
+                     m_write_idx - m_write_sent, 0);
+        }
+        if (n > 0) {
+            if (m_iv_count == 2) {
+                // header
+                if (n >= (ssize_t)m_iv[0].iov_len) {
+                    n -= m_iv[0].iov_len; //减去header发送的长度
+                    m_iv[0].iov_len = 0;  //发送完 header所以置0
+
+                    m_iv[1].iov_base = (char*)m_iv[1].iov_base +
+                                       n; //更新缓冲区起始位置，推进body
+                    m_iv[1].iov_len -= n; //减去剩余发送长度
+
+                    if (m_iv[1].iov_len == 0) { //写完了
+                        return true;
+                    } else { //没写完，推进header
+                        m_iv[0].iov_base = (char*)m_iv[0].iov_base + n;
+                        m_iv[0].iov_len -= n;
+                    }
+                }
+            } else {
+                m_write_sent += n;
+                if (m_write_sent >= m_write_idx) {
+                    return true;
+                }
+            }
+        } else if (n == -1 && errno == EAGAIN) {
+            return false;
+        } else {
+            return false;
+        }
+    }
 }
 void CowHttpConnection::process_read_arg_init() {
     state_ = State::READING;
@@ -143,6 +193,7 @@ void CowHttpConnection::unmap() {
 //得到一个正确的Http请求，分析目标文件的属性
 HttpCode CowHttpConnection::do_request() {
     //前面已经进行了合法性检查，此处直接拼接
+    
     char real_path[512];
     bzero(real_path, sizeof(real_path));
     int len = strlen(doc_root);
@@ -164,7 +215,8 @@ HttpCode CowHttpConnection::do_request() {
     if (S_ISDIR(m_file_stat.st_mode)) { //是否目录
         return HttpCode::BAD_REQUEST;
     }
-    m_real_file = real_path;
+    printf("Request file: %s\n", real_path);
+    m_real_file = real_path;   
     int fd = open(m_real_file, O_RDONLY);
     //创建内存映射
     m_file_address = (char*)mmap(nullptr, m_file_stat.st_size, PROT_READ,
@@ -202,7 +254,7 @@ CowHttpConnection::LineStatus CowHttpConnection::parse_line() {
     }
     return LineStatus::LINE_OPEN;
 }
-RequestMethod parse_method(char* method) {
+RequestMethod CowHttpConnection::parse_method(char* method) {
     if (strcasecmp(method, "GET") == 0)
         return RequestMethod::GET;
     if (strcasecmp(method, "POST") == 0)
@@ -276,7 +328,7 @@ HttpCode CowHttpConnection::parse_request_line(char* text) {
 //解析请求头
 HttpCode CowHttpConnection::parse_headers(char* text) {
     if (text[0] == '\0') {
-        //如果有请求体，m_content_length
+        //空行,header结束
         if (m_content_length != 0) {
             m_check_state = CheckState::CHECK_STATE_CONTENT;
             return HttpCode::NO_REQUEST;
@@ -325,12 +377,14 @@ HttpCode CowHttpConnection::process_read() {
     HttpCode ret = HttpCode::NO_REQUEST;
     char* text = nullptr;
     while (true) {
+        printf("[FSM] check_state=%d, line_status=%d\n", m_check_state,
+               line_status);
         if (m_check_state != CheckState::CHECK_STATE_CONTENT) {
             line_status = parse_line();
             if (line_status == LineStatus::LINE_BAD)
                 return HttpCode::BAD_REQUEST;
             if (line_status == LineStatus::LINE_OPEN)
-                break;
+                return HttpCode::NO_REQUEST;
             text = get_line();
             m_start_line = m_checked_idx;
             //非content的情况下才更新，因为content可能没有换行符
@@ -370,8 +424,91 @@ HttpCode CowHttpConnection::process_read() {
     }
     return ret;
 }
-HttpCode CowHttpConnection::process_write() {}
-HttpCode CowHttpConnection::process_process() {}
+
+bool CowHttpConnection::add_response(const char* format, ...) {
+    if (m_write_idx >= WRITE_BUFFER_SIZE) {
+        return false;
+    }
+    va_list arg_list;
+    va_start(arg_list, format);
+    int len = vsnprintf(m_write_buf + m_write_idx,
+                        WRITE_BUFFER_SIZE - 1 - m_write_idx, format, arg_list);
+    if (len >= WRITE_BUFFER_SIZE - 1 - m_write_idx) {
+        return false;
+    }
+    m_write_idx += len;
+    va_end(arg_list);
+    return true;
+}
+bool CowHttpConnection::add_status_line(int status, const char* title) {
+    return add_response("%s %d %s\r\n", "HTTP/1.1", status, title);
+}
+bool CowHttpConnection::add_headers(int content_len) {
+    return add_content_length(content_len) & add_content_type() & add_linger() &
+           add_blank_line();
+}
+bool CowHttpConnection::add_content_length(int content_len) {
+    return add_response("Content-Length: %d\r\n", content_len);
+}
+bool CowHttpConnection::add_linger() {
+    return add_response("Connection: %s\r\n",
+                        (m_linger == true) ? "keep-alive" : "close");
+}
+bool CowHttpConnection::add_blank_line() { return add_response("%s", "\r\n"); }
+bool CowHttpConnection::add_content(const char* content) {
+    return add_response("%s", content);
+}
+bool CowHttpConnection::add_content_type() {
+    return add_response("Content-Type:%s\r\n", "text/html");
+}
+bool CowHttpConnection::process_write(HttpCode ret) {
+    switch (ret) {
+    case HttpCode::INTERNAL_ERROR:
+        add_status_line(500, error_500_title);
+        add_headers(strlen(error_500_form));
+        if (!add_content(error_500_form)) {
+            return false;
+        }
+        break;
+    case HttpCode::BAD_REQUEST:
+        add_status_line(400, error_400_title);
+        add_headers(strlen(error_400_form));
+        if (!add_content(error_400_form)) {
+            return false;
+        }
+        break;
+    case HttpCode::NO_RESOURCE:
+        add_status_line(404, error_404_title);
+        add_headers(strlen(error_404_form));
+        if (!add_content(error_404_form)) {
+            return false;
+        }
+        break;
+    case HttpCode::FORBIDDEN_REQUEST:
+        add_status_line(403, error_403_title);
+        add_headers(strlen(error_403_form));
+        if (!add_content(error_403_form)) {
+            return false;
+        }
+        break;
+    case HttpCode::FILE_REQUEST:
+        add_status_line(200, ok_200_title);
+        add_headers(m_file_stat.st_size);
+        //分散，聚集io
+        m_iv[0].iov_base = m_write_buf;
+        m_iv[0].iov_len = m_write_idx;
+        m_iv[1].iov_base = m_file_address;
+        m_iv[1].iov_len = m_file_stat.st_size;
+        m_iv_count = 2;
+        return true;
+    default:
+        return false;
+    }
+    m_iv[0].iov_base = m_write_buf;
+    m_iv[0].iov_len = m_write_idx;
+    m_iv_count = 1; // 默认设置 m_iv_count = 1
+    return true;
+}
 
 //线程池工作调用，连接调度的FSM
 void CowHttpConnection::process() {
@@ -381,33 +518,42 @@ void CowHttpConnection::process() {
     //有限状态机
     switch (state_) {
     case State::READING: {
-        HttpCode read_ret = process_read();
-        if (read_ret == HttpCode::NO_REQUEST) {
+        m_read_ret = process_read();
+        if (m_read_ret == HttpCode::NO_REQUEST) {
             modifyfd(m_epollfd, m_sockfd, EPOLLIN);
-        }else{
-            state_ = State::PROCESSING;
+            return; //等待更多数据
+        }
+        state_ = State::PROCESSING;
+    }
+    case State::PROCESSING: {
+        if (process_write(m_read_ret)) {
+            state_ = State::WRITING;
+            modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
+        } else {
+            close_connection();
         }
         break;
     }
     case State::WRITING: {
-        if(!write()){
+        if (!write()) {
             modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
-        }else{
-            state_ = m_linger ? State::READING : State::CLOSED;
+        } else {
+            if (m_linger) {
+                //重置连接状态
+                process_read_arg_init();
+                modifyfd(m_epollfd, m_sockfd, EPOLLIN);
+                state_ = State::READING;
+            } else {
+                close_connection();
+            }
         }
-        break;
-    }
-    case State::PROCESSING: {
-        process_write(); //构造响应
-        modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
-        state_ = State::WRITING;
         break;
     }
     case State::CLOSED: {
         close_connection();
+        break;
     }
     default:
         break;
     }
-    //生成响应
 }

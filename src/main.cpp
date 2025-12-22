@@ -124,6 +124,9 @@ int main(int argc, char* argv[]) {
                     int confd =
                         accept(serverfd, (struct sockaddr*)&request_addr,
                                &req_addr_size);
+                    printf("Accepted connection from %s:%d\n",
+                           inet_ntoa(request_addr.sin_addr),
+                           ntohs(request_addr.sin_port));
                     if (CowHttpConnection::m_user_cnt >= MAX_FD) {
                         //给客户的报错可以整理成一个error的enum，到时候直接传入，这里不作处理；
                         std::string err =
@@ -141,7 +144,7 @@ int main(int argc, char* argv[]) {
             } else if (ev & EPOLLIN) {
                 if (user_con[sockfd].read()) {
                     pool->append(&user_con[sockfd]);
-                    //pool->append(user_con + sockfd);
+                    // pool->append(user_con + sockfd);
                 } else {
                     user_con[sockfd].close_connection();
                 }

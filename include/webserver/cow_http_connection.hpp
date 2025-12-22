@@ -4,6 +4,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/uio.h>
 enum class HttpCode {
     NO_REQUEST,        //请求不完整
     GET_REQUEST,       //获得了一个完成的客户请求
@@ -53,14 +54,22 @@ class CowHttpConnection {
     HttpCode parse_headers(char* text);      //请求头 行驱动
     HttpCode parse_contents();               //请求体 字节驱动
     char* get_line() { return m_read_buf + m_start_line; };
-    //写
-    HttpCode process_write();
-    //
-    HttpCode process_process();
+    //写 ,往缓冲区写数据
+    bool process_write(HttpCode ret);
+    bool add_response(const char* fomat, ...);
+    bool add_status_line(int status, const char* title);
+    bool add_headers(int content_len);
+    bool add_content_length(int content_len);
+    bool add_linger();
+    bool add_blank_line();
+    bool add_content(const char* content);
+    bool add_content_type();
 
   private:
     int m_sockfd;          //通信sock
     sockaddr_in m_address; //通信sock地址
+
+    HttpCode m_read_ret;
 
     char m_read_buf[READ_BUFFER_SIZE];
     int m_read_idx;    //读取索引
@@ -74,9 +83,6 @@ class CowHttpConnection {
     };
     CheckState m_check_state;     // process_read的子状态机
     void process_read_arg_init(); // process_read初始化
-
-    char m_write_buf[WRITE_BUFFER_SIZE];
-
     enum class LineStatus {
         LINE_OK,  //读取到完整的行
         LINE_BAD, //行出错
@@ -97,4 +103,12 @@ class CowHttpConnection {
     struct stat m_file_stat;
     char* m_file_address;
     void unmap();
+
+    char m_write_buf[WRITE_BUFFER_SIZE];
+    int m_write_idx;
+    int m_write_sent;
+    int m_iv_count;
+    struct iovec m_iv[2]; // http响应天然分段 header 和 body
+    // m_iv[0] : HTTP response header
+    // m_iv[1] : HTTP response body (file)
 };
