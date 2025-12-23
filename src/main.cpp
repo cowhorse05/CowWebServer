@@ -135,7 +135,7 @@ int main(int argc, char* argv[]) {
                         close(confd);
                         continue;
                     }
-                    //初始化客户数据，利用连接的描述符作为索引,这里没有问题吧
+                    //初始化客户数据，利用连接的描述符作为索引
                     user_con[confd].init(confd, request_addr);
                 }
             } else if (ev & (EPOLLERR | EPOLLRDHUP | EPOLLHUP)) {
@@ -143,7 +143,7 @@ int main(int argc, char* argv[]) {
                 user_con[sockfd].close_connection();
             } else if (ev & EPOLLIN) {
                 if (user_con[sockfd].read()) {
-                    pool->append(&user_con[sockfd]);
+                    pool->append(&user_con[sockfd]); //加入线程池
                     // pool->append(user_con + sockfd);
                 } else {
                     user_con[sockfd].close_connection();

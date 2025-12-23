@@ -120,43 +120,56 @@ bool CowHttpConnection::read() { //一次性读完
     printf("read data:\n%s", m_read_buf);
     return true;
 }
-
+/*
+struct iovec {
+    void  *iov_base;  // 缓冲区起始地址（用户空间内存）
+    size_t iov_len;   // 缓冲区长度（字节数）
+};
+writev 返回 n 字节后，要“消费掉”这 n 字节
+按顺序优先消费 header，再消费 body
+*/
 bool CowHttpConnection::write() {
     printf("send data to user\n");
     ssize_t n;
-    /*
-    struct iovec {
-        void  *iov_base;  // 缓冲区起始地址（用户空间内存）
-        size_t iov_len;   // 缓冲区长度（字节数）
-    };
-    writev 返回 n 字节后，要“消费掉”这 n 字节
-    按顺序优先消费 header，再消费 body
-    */
     while (true) {
         if (m_iv_count == 2) {
             n = writev(m_sockfd, m_iv,
                        m_iv_count); //一次性发送多个不连续的数据块
+            printf(
+                "writev/send returned %ld, m_iv[0].len=%zu, m_iv[1].len=%zu\n",
+                n, m_iv[0].iov_len, m_iv[1].iov_len);
         } else {
             n = send(m_sockfd, m_write_buf + m_write_sent,
                      m_write_idx - m_write_sent, 0);
         }
         if (n > 0) {
+            bytes_have_send += n;
+            printf("Sent %ld bytes, bytes_have_send=%ld\n", n, bytes_have_send);
             if (m_iv_count == 2) {
-                // header
-                if (n >= (ssize_t)m_iv[0].iov_len) {
-                    n -= m_iv[0].iov_len; //减去header发送的长度
-                    m_iv[0].iov_len = 0;  //发送完 header所以置0
-
-                    m_iv[1].iov_base = (char*)m_iv[1].iov_base +
-                                       n; //更新缓冲区起始位置，推进body
-                    m_iv[1].iov_len -= n; //减去剩余发送长度
-
-                    if (m_iv[1].iov_len == 0) { //写完了
-                        return true;
-                    } else { //没写完，推进header
-                        m_iv[0].iov_base = (char*)m_iv[0].iov_base + n;
-                        m_iv[0].iov_len -= n;
+                // 消费header
+                ssize_t remaining = n;
+                if (remaining >= (ssize_t)m_iv[0].iov_len) {
+                    remaining -= m_iv[0].iov_len; //减去header发送的长度
+                    m_iv[0].iov_len = 0;          //发送完 header所以置0
+                } else {
+                    //只发送了一部分
+                    m_iv[0].iov_base = (char*)m_iv[0].iov_base + remaining;
+                    m_iv[0].iov_len -= remaining;
+                    remaining = 0;
+                }
+                //消费body
+                if (remaining > 0 && m_iv[1].iov_len > 0) {
+                    if (remaining >= (ssize_t)m_iv[1].iov_len) {
+                        // 整个body都被发送了
+                        m_iv[1].iov_len = 0;
+                    } else {
+                        m_iv[1].iov_base = (char*)m_iv[1].iov_base + remaining;
+                        m_iv[1].iov_len -= remaining; //减去剩余发送长度
                     }
+                }
+
+                if (m_iv[0].iov_len == 0 && m_iv[1].iov_len == 0) { //写完了
+                    return true;
                 }
             } else {
                 m_write_sent += n;
@@ -164,14 +177,23 @@ bool CowHttpConnection::write() {
                     return true;
                 }
             }
-        } else if (n == -1 && errno == EAGAIN) {
+        } else if (n == 0) {
+            // 对端关闭连接
             return false;
-        } else {
-            return false;
+        } else if (n == -1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // 缓冲区满，下次再试
+                return false;
+            } else {
+                // 其他错误
+                return false;
+            }
         }
     }
 }
 void CowHttpConnection::process_read_arg_init() {
+    bytes_to_send = 0;
+    bytes_have_send = 0;
     state_ = State::READING;
     m_check_state = CheckState::CHECK_STATE_REQUESTLINE; //请求解析首行
     m_checked_idx = 0;
@@ -184,7 +206,7 @@ void CowHttpConnection::process_read_arg_init() {
 
     bzero(m_read_buf, READ_BUFFER_SIZE);
 }
-void CowHttpConnection::unmap() {
+void CowHttpConnection::unmap() { //貌似没有使用到
     if (m_file_address) {
         munmap(m_file_address, m_file_stat.st_size);
         m_file_address = nullptr;
@@ -193,7 +215,7 @@ void CowHttpConnection::unmap() {
 //得到一个正确的Http请求，分析目标文件的属性
 HttpCode CowHttpConnection::do_request() {
     //前面已经进行了合法性检查，此处直接拼接
-    
+
     char real_path[512];
     bzero(real_path, sizeof(real_path));
     int len = strlen(doc_root);
@@ -216,13 +238,14 @@ HttpCode CowHttpConnection::do_request() {
         return HttpCode::BAD_REQUEST;
     }
     printf("Request file: %s\n", real_path);
-    m_real_file = real_path;   
+    m_real_file = real_path;
     int fd = open(m_real_file, O_RDONLY);
     //创建内存映射
     m_file_address = (char*)mmap(nullptr, m_file_stat.st_size, PROT_READ,
                                  MAP_PRIVATE, fd, 0);
     if (m_file_address == MAP_FAILED) {
         close(fd);
+        unmap();
         return HttpCode::INTERNAL_ERROR;
     }
     close(fd);
@@ -303,7 +326,7 @@ HttpCode CowHttpConnection::parse_request_line(char* text) {
     *version++ = '\0';
     version += strspn(version, " \t");
 
-    if (strcasecmp(version, "HTTP/1.1") != 0) {
+    if (strcasecmp(version, "HTTP/1.0") != 0) {
         return HttpCode::BAD_REQUEST;
     }
     // update member
@@ -441,25 +464,26 @@ bool CowHttpConnection::add_response(const char* format, ...) {
     return true;
 }
 bool CowHttpConnection::add_status_line(int status, const char* title) {
-    return add_response("%s %d %s\r\n", "HTTP/1.1", status, title);
+    return add_response("%s %d %s\r\n", "HTTP/1.0", status, title);
 }
 bool CowHttpConnection::add_headers(int content_len) {
-    return add_content_length(content_len) & add_content_type() & add_linger() &
-           add_blank_line();
+    return add_content_length(content_len) && add_content_type() &&
+           add_linger() && add_blank_line();
 }
 bool CowHttpConnection::add_content_length(int content_len) {
     return add_response("Content-Length: %d\r\n", content_len);
 }
 bool CowHttpConnection::add_linger() {
-    return add_response("Connection: %s\r\n",
-                        (m_linger == true) ? "keep-alive" : "close");
+    // return add_response("Connection: %s\r\n",
+    //                     (m_linger == true) ? "keep-alive" : "close");
+    return add_response("Connection: close\r\n");
 }
 bool CowHttpConnection::add_blank_line() { return add_response("%s", "\r\n"); }
 bool CowHttpConnection::add_content(const char* content) {
     return add_response("%s", content);
 }
 bool CowHttpConnection::add_content_type() {
-    return add_response("Content-Type:%s\r\n", "text/html");
+    return add_response("Content-Type: %s\r\n", "text/html");
 }
 bool CowHttpConnection::process_write(HttpCode ret) {
     switch (ret) {
@@ -500,6 +524,7 @@ bool CowHttpConnection::process_write(HttpCode ret) {
         m_iv[1].iov_base = m_file_address;
         m_iv[1].iov_len = m_file_stat.st_size;
         m_iv_count = 2;
+        bytes_to_send = m_write_idx + m_file_stat.st_size;
         return true;
     default:
         return false;
@@ -515,45 +540,82 @@ void CowHttpConnection::process() {
     //解析
     printf("parse http request,create response\n");
 
-    //有限状态机
-    switch (state_) {
-    case State::READING: {
-        m_read_ret = process_read();
-        if (m_read_ret == HttpCode::NO_REQUEST) {
-            modifyfd(m_epollfd, m_sockfd, EPOLLIN);
-            return; //等待更多数据
-        }
-        state_ = State::PROCESSING;
+    // //有限状态机
+    // switch (state_) {
+    // case State::READING: {
+    //     m_read_ret = process_read();
+    //     if (m_read_ret == HttpCode::NO_REQUEST) {
+    //         modifyfd(m_epollfd, m_sockfd, EPOLLIN);
+    //         return; //等待更多数据
+    //     }
+    //     state_ = State::PROCESSING;
+    // }
+    // case State::PROCESSING: {
+    //     if (process_write(m_read_ret)) {
+    //         state_ = State::WRITING;
+    //         modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
+    //     } else {
+    //         close_connection();
+    //     }
+    //     break;
+    // }
+    // case State::WRITING: {
+    //     if (!write()) {
+    //         modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
+    //         printf("Need to continue writing...\n");
+    //     } else {
+    //         // 所有数据发送完成
+    //         printf("All data sent successfully\n");
+    //         unmap();
+    //         if (m_linger) {
+    //             //重置连接状态
+    //             printf("Keep-alive connection, resetting...\n");
+    //             process_read_arg_init();
+    //             modifyfd(m_epollfd, m_sockfd, EPOLLIN);
+    //             state_ = State::READING;
+    //         } else {
+    //             // 短连接，等待客户端关闭
+    //             printf("Short connection, waiting for client to close...\n");
+    //             // 不要立即close_connection()，而是等待EPOLLRDHUP事件
+    //             // 可以设置一个标志或者改变状态
+    //             state_ = State::FINISHED;
+    //             // 监听读事件（等待客户端关闭）
+    //             modifyfd(m_epollfd, m_sockfd, EPOLLIN | EPOLLRDHUP);
+    //         }
+    //     }
+    //     break;
+    // }
+    // case State::FINISHED: {
+    //     // 已经发送完响应，等待客户端关闭连接
+    //     // 这里什么都不做，等待epoll检测到EPOLLRDHUP或EPOLLIN事件
+    //     // 当检测到EPOLLRDHUP时，会调用close_connection()
+    //     break;
+    // }
+    // case State::CLOSED: {
+    //     close_connection();
+    //     break;
+    // }
+    // default:
+    //     break;
+    // }
+    // 解析HTTP请求
+    HttpCode read_ret = process_read();
+    if (read_ret == HttpCode::NO_REQUEST) {
+        modifyfd(m_epollfd, m_sockfd, EPOLLIN);
+        return;
     }
-    case State::PROCESSING: {
-        if (process_write(m_read_ret)) {
-            state_ = State::WRITING;
-            modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
-        } else {
-            close_connection();
-        }
-        break;
-    }
-    case State::WRITING: {
-        if (!write()) {
-            modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
-        } else {
-            if (m_linger) {
-                //重置连接状态
-                process_read_arg_init();
-                modifyfd(m_epollfd, m_sockfd, EPOLLIN);
-                state_ = State::READING;
-            } else {
-                close_connection();
-            }
-        }
-        break;
-    }
-    case State::CLOSED: {
+
+    // 生成响应
+    bool write_ret = process_write(read_ret);
+    if (!write_ret) {
         close_connection();
-        break;
     }
-    default:
-        break;
+    modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
+    if (write()) {
+        // 响应已完整发送
+        unmap();
+        close_connection(); 
+    } else {
+        modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
     }
 }

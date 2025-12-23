@@ -4,6 +4,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <sys/uio.h>
 enum class HttpCode {
     NO_REQUEST,        //请求不完整
@@ -46,7 +47,7 @@ class CowHttpConnection {
     bool read(); //读完数据
     bool write();
 
-    enum class State { READING, PROCESSING, WRITING, CLOSED };
+    enum class State { READING, PROCESSING, WRITING, CLOSED, FINISHED };
     // read部分
     HttpCode process_read();
     HttpCode do_request();
@@ -102,7 +103,7 @@ class CowHttpConnection {
     char* m_real_file;
     struct stat m_file_stat;
     char* m_file_address;
-    void unmap();
+    void unmap(); //这里没用上
 
     char m_write_buf[WRITE_BUFFER_SIZE];
     int m_write_idx;
@@ -111,4 +112,6 @@ class CowHttpConnection {
     struct iovec m_iv[2]; // http响应天然分段 header 和 body
     // m_iv[0] : HTTP response header
     // m_iv[1] : HTTP response body (file)
+    ssize_t bytes_to_send;
+    ssize_t bytes_have_send;
 };
