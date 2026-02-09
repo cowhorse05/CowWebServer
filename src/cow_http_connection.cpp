@@ -474,9 +474,9 @@ bool CowHttpConnection::add_content_length(int content_len) {
     return add_response("Content-Length: %d\r\n", content_len);
 }
 bool CowHttpConnection::add_linger() {
-    // return add_response("Connection: %s\r\n",
-    //                     (m_linger == true) ? "keep-alive" : "close");
-    return add_response("Connection: close\r\n");
+    return add_response("Connection: %s\r\n",
+                        (m_linger == true) ? "keep-alive" : "close");
+    //return add_response("Connection: close\r\n");
 }
 bool CowHttpConnection::add_blank_line() { return add_response("%s", "\r\n"); }
 bool CowHttpConnection::add_content(const char* content) {
