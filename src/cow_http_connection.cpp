@@ -58,8 +58,8 @@ void print_events(uint32_t events) {
 void addfd(int epollfd, int fd, bool one_shot) {
 
     struct epoll_event event;
-    event.events = EPOLLIN | EPOLLRDHUP;
-    // event.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
+    //event.events = EPOLLIN | EPOLLRDHUP;
+    event.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
     event.data.fd = fd;
     if (one_shot) {
         event.events = event.events | EPOLLONESHOT;

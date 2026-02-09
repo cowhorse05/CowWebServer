@@ -103,7 +103,7 @@ class CowHttpConnection {
     char* m_real_file;
     struct stat m_file_stat;
     char* m_file_address;
-    void unmap(); //这里没用上
+    void unmap(); 
 
     char m_write_buf[WRITE_BUFFER_SIZE];
     int m_write_idx;
