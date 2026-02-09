@@ -1,0 +1,20 @@
+BasedOnStyle: LLVM
+Language: Cpp
+
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+
+BreakBeforeBraces: Attach
+
+# 构造函数初始化列表：逗号在前
+BreakConstructorInitializers: BeforeComma
+ConstructorInitializerIndentWidth: 4
+ConstructorInitializerAllOnOneLineOrOnePerLine: false
+
+# 对齐
+AlignAfterOpenBracket: Align
+AlignOperands: true
+
+# 指针
+PointerAlignment: Left
