@@ -5,35 +5,35 @@
 #include<exception>
 #include<semaphore.h>
 #include<assert.h>
-
+#include<stdio.h>
 /*--------互斥锁类------------*/
 class CowLocker{
 public:
     CowLocker(){
-        if(pthread_mutex_init(&mutex_, NULL)){
+        if(pthread_mutex_init(&m_mutex, NULL)){
             throw std::exception();
         } 
     }
     ~CowLocker(){
-        pthread_mutex_destroy(&mutex_);
+        pthread_mutex_destroy(&m_mutex);
     }
     CowLocker(const CowLocker&) = delete;
     CowLocker& operator=(const CowLocker&) = delete;
     
     bool lock(){
-        return pthread_mutex_lock(&mutex_) == 0;
+        return pthread_mutex_lock(&m_mutex) == 0;
     }
     
     bool unlock(){
-        return pthread_mutex_unlock(&mutex_) == 0;
+        return pthread_mutex_unlock(&m_mutex) == 0;
     }
     pthread_mutex_t* native_handle(){
-        return &mutex_;
+        return &m_mutex;
     }
 
     
 private:
-    pthread_mutex_t mutex_;
+    pthread_mutex_t m_mutex;
 
 };
 
@@ -45,7 +45,9 @@ public:
     }
     ~ CowCondition(){
         int ret = pthread_cond_destroy(&m_condition);
-        assert(ret == 0);
+        if(ret != 0){
+            printf("Failed to destroy thread");
+        }
     }
     CowCondition(const CowCondition&) = delete;
     CowCondition& operator=(const CowCondition&) = delete;
