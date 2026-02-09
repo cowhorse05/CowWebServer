@@ -96,4 +96,3 @@ public:
 private:
     sem_t m_semaphore;
 };
-
