@@ -67,8 +67,9 @@ void print_events(uint32_t events) {
 void addfd(int epollfd, int fd, bool one_shot) {
 
     struct epoll_event event;
-    // event.events = EPOLLIN | EPOLLRDHUP;
+    //event.events = EPOLLIN | EPOLLRDHUP;
     event.events = EPOLLIN | EPOLLRDHUP | EPOLLET;
+
     //如果选lt，不处理准备就绪的文件描述符，就会一直通知
     event.data.fd = fd;
     if (one_shot) {
@@ -141,7 +142,6 @@ writev 返回 n 字节后，要“消费掉”这 n 字节
 bool CowHttpConnection::write() {
     printf("send data to user\n");
     ssize_t n;
-    bool write_complete = false;
     while (true) {
         if (m_iv_count == 2) {
             n = writev(m_sockfd, m_iv,
@@ -181,15 +181,14 @@ bool CowHttpConnection::write() {
                 }
 
                 if (m_iv[0].iov_len == 0 && m_iv[1].iov_len == 0) { //写完了
-                    unmap();
-                    // if(m_linger){
-                    //     process_read_arg_init();//初始化读参数准备继续读取
-                    //     modifyfd(m_epollfd, m_sockfd, EPOLLIN);
-                    //     return true;
-                    // }else{
-                    //     modifyfd(m_epollfd, m_sockfd, EPOLLIN);
-                    //     return false;
-                    // }
+                    if(m_linger){
+                        process_read_arg_init();//初始化读参数准备继续读取
+                        modifyfd(m_epollfd, m_sockfd, EPOLLIN);
+                        return true;
+                    }else{
+                        modifyfd(m_epollfd, m_sockfd, EPOLLIN);
+                        return false;
+                    }
                     return true;
                 }
             } else {
@@ -215,11 +214,10 @@ bool CowHttpConnection::write() {
         }
     }
 }
-
 void CowHttpConnection::process_read_arg_init() {
     bytes_to_send = 0;
     bytes_have_send = 0;
-    // state_ = State::READING;
+    //state_ = State::READING;
     m_check_state = CheckState::CHECK_STATE_REQUESTLINE; //请求解析首行
     m_linger = false;                                    //默认不保持
     m_version = nullptr;
@@ -229,21 +227,21 @@ void CowHttpConnection::process_read_arg_init() {
     m_read_idx = 0;
     m_write_idx = 0;
 
+
     //初始化请求信息
     m_method = RequestMethod::GET;
     m_url = nullptr;
 
     bzero(m_read_buf, READ_BUFFER_SIZE);
     bzero(m_write_buf, READ_BUFFER_SIZE);
-    bzero(m_real_file, FILENAME_LEN);
+    // bzero(m_real_file, FILENAME_LEN);
 }
-void CowHttpConnection::unmap() {
+void CowHttpConnection::unmap() { //貌似没有使用到
     if (m_file_address) {
         munmap(m_file_address, m_file_stat.st_size);
         m_file_address = nullptr;
     }
 }
-
 //得到一个正确的Http请求，分析目标文件的属性
 HttpCode CowHttpConnection::do_request() {
     //前面已经进行了合法性检查，此处直接拼接
@@ -413,7 +411,6 @@ HttpCode CowHttpConnection::parse_headers(char* text) {
     }
     return HttpCode::NO_REQUEST;
 }
-
 //不解析请求的消息体，只判断是否完整读入
 HttpCode CowHttpConnection::parse_contents() {
     if (m_read_idx >= m_checked_idx + m_content_length) {
@@ -448,15 +445,14 @@ HttpCode CowHttpConnection::process_read() {
 
         // printf("get one http line %s", text);
         switch (m_check_state) {
-        case CheckState::CHECK_STATE_REQUESTLINE: {
+        case CheckState::CHECK_STATE_REQUESTLINE:
             ret = parse_request_line(text);
             if (ret == HttpCode::BAD_REQUEST) {
                 return ret;
             }
             break;
-        }
 
-        case CheckState::CHECK_STATE_HEADER: {
+        case CheckState::CHECK_STATE_HEADER:
             ret = parse_headers(text);
             if (ret == HttpCode::BAD_REQUEST) {
                 return ret;
@@ -464,10 +460,9 @@ HttpCode CowHttpConnection::process_read() {
                 return do_request();
             }
             break;
-        }
 
-        case CheckState::CHECK_STATE_CONTENT: {
-            //此处不是按行解析，本项目对此不作解析
+        case CheckState::
+            CHECK_STATE_CONTENT: //此处不是按行解析，本项目对此不作解析
             ret = parse_contents();
             if (ret == HttpCode::BAD_REQUEST) {
                 return ret;
@@ -475,8 +470,6 @@ HttpCode CowHttpConnection::process_read() {
                 return do_request();
             }
             return HttpCode::NO_REQUEST;
-        }
-
         default:
             ret = HttpCode::INTERNAL_ERROR;
             break;
@@ -484,6 +477,7 @@ HttpCode CowHttpConnection::process_read() {
     }
     return ret;
 }
+
 bool CowHttpConnection::add_response(const char* format, ...) {
     if (m_write_idx >= WRITE_BUFFER_SIZE) {
         return false;
@@ -512,7 +506,7 @@ bool CowHttpConnection::add_content_length(int content_len) {
 bool CowHttpConnection::add_linger() {
     return add_response("Connection: %s\r\n",
                         (m_linger == true) ? "keep-alive" : "close");
-    // return add_response("Connection: close\r\n");
+    //return add_response("Connection: close\r\n");
 }
 bool CowHttpConnection::add_blank_line() { return add_response("%s", "\r\n"); }
 bool CowHttpConnection::add_content(const char* content) {
@@ -635,7 +629,6 @@ void CowHttpConnection::process() {
     //     break;
     // }
     // 解析HTTP请求
-
     HttpCode read_ret = process_read();
     if (read_ret == HttpCode::NO_REQUEST) {
         modifyfd(m_epollfd, m_sockfd, EPOLLIN);
@@ -651,7 +644,7 @@ void CowHttpConnection::process() {
     if (write()) {
         // 响应已完整发送
         unmap();
-        close_connection();
+        close_connection(); 
     } else {
         modifyfd(m_epollfd, m_sockfd, EPOLLOUT);
     }

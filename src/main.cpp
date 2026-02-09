@@ -111,9 +111,9 @@ int main(int argc, char* argv[]) {
         for (int i = 0; i < event_cnt; ++i) {
             int sockfd = ep_events[i].data.fd;
             uint32_t ev = ep_events[i].events;
-            printf("[event %d] fd=%d events=", i, sockfd);
+            //printf("[event %d] fd=%d events=", i, sockfd);
             print_events(ev);
-            printf("\n");
+            //printf("\n");
             // reactor
             if (sockfd == serverfd) { //连接成功
                 if (sockfd == serverfd) {
