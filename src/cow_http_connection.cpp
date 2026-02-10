@@ -16,6 +16,11 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <webserver/cow_http_connection.hpp>
+#include "webserver/cow_timer.hpp"
+#include "webserver/config.hpp"
+
+extern TimerManager timer_manager;
+
 //定义http相应状态信息
 const char* ok_200_title = "OK";
 const char* error_400_title = "Bad Request";
@@ -35,6 +40,7 @@ const char* doc_root = "/home/liyufeng/cpp_projects/webserver/resources";
 // 静态成员初始化，否则未定义行为
 int CowHttpConnection::m_epollfd = -1;
 int CowHttpConnection::m_user_cnt = 0;
+const int TIMEOUT = CONNECTION_TIMEOUT;  
 
 //设置文件描述符非阻塞
 void setnonblocking(int fd) {
@@ -109,6 +115,10 @@ void CowHttpConnection::close_connection() {
         m_sockfd = -1; //防止重复close
         m_user_cnt--;  //线程不安全
     }
+    if (timer) {
+        timer->deleted = true;
+        timer = nullptr;
+    }
     printf("[close] fd=%d\n", m_sockfd);
 }
 bool CowHttpConnection::read() { //一次性读完
@@ -128,7 +138,8 @@ bool CowHttpConnection::read() { //一次性读完
         }
         m_read_idx += bytes_read;
     }
-    printf("read data:\n%s", m_read_buf);
+    //printf("read data:\n%s", m_read_buf);
+    timer_manager.adjust_timer(timer, TIMEOUT);
     return true;
 }
 /*
@@ -140,13 +151,13 @@ writev 返回 n 字节后，要“消费掉”这 n 字节
 按顺序优先消费 header，再消费 body
 */
 bool CowHttpConnection::write() {
-    printf("send data to user\n");
+    //printf("send data to user\n");
     ssize_t n;
     while (true) {
         if (m_iv_count == 2) {
             n = writev(m_sockfd, m_iv,
                        m_iv_count); //一次性发送多个不连续的数据块
-            printf("writev/send returned %ld\n", n);
+            //printf("writev/send returned %ld\n", n);
             // printf(
             //     "writev/send returned %ld, m_iv[0].len=%zu,
             //     m_iv[1].len=%zu\n", n, m_iv[0].iov_len, m_iv[1].iov_len);
@@ -156,7 +167,7 @@ bool CowHttpConnection::write() {
         }
         if (n > 0) {
             bytes_have_send += n;
-            printf("Sent %ld bytes, bytes_have_send=%ld\n", n, bytes_have_send);
+            //printf("Sent %ld bytes, bytes_have_send=%ld\n", n, bytes_have_send);
             if (m_iv_count == 2) {
                 // 消费header
                 ssize_t remaining = n;
@@ -197,6 +208,7 @@ bool CowHttpConnection::write() {
                     return true;
                 }
             }
+            timer_manager.adjust_timer(timer, TIMEOUT);
         } else if (n == 0) {
             // 对端关闭连接
             unmap();
@@ -236,7 +248,7 @@ void CowHttpConnection::process_read_arg_init() {
     bzero(m_write_buf, READ_BUFFER_SIZE);
     // bzero(m_real_file, FILENAME_LEN);
 }
-void CowHttpConnection::unmap() { //貌似没有使用到
+void CowHttpConnection::unmap() { 
     if (m_file_address) {
         munmap(m_file_address, m_file_stat.st_size);
         m_file_address = nullptr;
@@ -267,7 +279,7 @@ HttpCode CowHttpConnection::do_request() {
     if (S_ISDIR(m_file_stat.st_mode)) { //是否目录
         return HttpCode::BAD_REQUEST;
     }
-    printf("Request file: %s\n", real_path);
+    //printf("Request file: %s\n", real_path);
     m_real_file = real_path;
     int fd = open(m_real_file, O_RDONLY);
     //创建内存映射
@@ -419,7 +431,6 @@ HttpCode CowHttpConnection::parse_contents() {
         m_content = m_read_buf + m_checked_idx;
         return HttpCode::GET_REQUEST;
     }
-
     // content 还没读完整
     return HttpCode::NO_REQUEST;
 }

@@ -8,6 +8,7 @@ add_executable(webserver
     src/cow_locker.cpp
     src/cow_threadpool.cpp
     src/cow_http_connection.cpp
+    src/cow_timer.cpp
     src/main.cpp
 )
 target_include_directories(webserver

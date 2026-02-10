@@ -1,6 +1,8 @@
+#include "webserver/config.hpp"
 #include "webserver/cow_http_connection.hpp"
 #include "webserver/cow_locker.hpp"
 #include "webserver/cow_threadpool.hpp"
+#include "webserver/cow_timer.hpp"
 #include <arpa/inet.h>
 #include <asm-generic/socket.h>
 #include <csignal>
@@ -22,6 +24,8 @@
 #define MAX_FD 65535
 #define EPOLL_SIZE 50
 #define MAX_EVENT_NUMBER 10000
+
+TimerManager timer_manager;
 
 //处理错误
 void error_handling(std::string message) {
@@ -98,7 +102,12 @@ int main(int argc, char* argv[]) {
     epoll_ctl(epollfd, EPOLL_CTL_ADD, serverfd, &event);
 
     while (1) {
-        event_cnt = epoll_wait(epollfd, ep_events, MAX_EVENT_NUMBER, -1);
+        // event_cnt = epoll_wait(epollfd, ep_events, MAX_EVENT_NUMBER, -1);
+        event_cnt =
+            epoll_wait(epollfd, ep_events, MAX_EVENT_NUMBER, EPOLL_TIMEOUT);
+        //每一轮检查超时连接
+        timer_manager.handle_expired();
+
         if (event_cnt < 0) {
             if (errno == EINTR) {
                 // 被信号中断，继续等
@@ -107,14 +116,15 @@ int main(int argc, char* argv[]) {
             perror("epoll_wait");
             break;
         }
+
         //循环处理连接
         for (int i = 0; i < event_cnt; ++i) {
             int sockfd = ep_events[i].data.fd;
             uint32_t ev = ep_events[i].events;
-            //printf("[event %d] fd=%d events=", i, sockfd);
+            // printf("[event %d] fd=%d events=", i, sockfd);
             print_events(ev);
-            //printf("\n");
-            // reactor
+            // printf("\n");
+            //  reactor
             if (sockfd == serverfd) { //连接成功
                 if (sockfd == serverfd) {
                     printf(">> accept event on serverfd\n");

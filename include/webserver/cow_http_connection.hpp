@@ -1,4 +1,5 @@
 #pragma once
+#include "webserver/cow_timer.hpp"
 #include <arpa/inet.h>
 #include <cstring>
 #include <sys/epoll.h>
@@ -6,6 +7,8 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/uio.h>
+#include <time.h>
+class TimerNode;
 enum class HttpCode {
     NO_REQUEST,        //请求不完整
     GET_REQUEST,       //获得了一个完成的客户请求
@@ -124,4 +127,8 @@ class CowHttpConnection {
     // m_iv[1] : HTTP response body (file)
     ssize_t bytes_to_send;
     ssize_t bytes_have_send;
+
+  public:
+    //计时器
+    TimerNode* timer;
 };
